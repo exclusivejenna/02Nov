@@ -1,0 +1,199 @@
+using System.Threading.Tasks;
+using BCSIT.Data;
+using BCSIT.Models;
+using Microsoft.EntityFrameworkCore;
+using System;
+using Microsoft.Data.SqlClient;
+using System.Data;
+using AspNetCore.ReportingServices.ReportProcessing.ReportObjectModel;
+using Microsoft.EntityFrameworkCore.Internal;
+
+namespace BCSIT.Services
+{
+    public class LoginService   
+    {
+        private readonly DataContext _context;
+        public LoginService(DataContext Context)
+        {
+            _context = Context;
+        }
+
+
+        public async Task<List<Users>> GetUsersAsync()
+        {
+            return await _context.Users.ToListAsync();
+        }
+                     
+        public async Task ApproveUsersAsync(List<int> userIds)
+        {
+            var usersToApprove = await _context.Users
+                                               .Where(u => userIds.Contains(u.userID))
+                                               .ToListAsync();
+            foreach (var user in usersToApprove)
+            {
+                user.userStatus = "Approved";
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task<decimal> GetFeeAsync(int FeeSchTypeID)
+        {
+           // using var context = _context.CreateDbContext();
+            var fee = await _context.FeeSchedules
+                                   .Where(f => f.FeeSchTypeID == 2)
+                                   .Select(f => f.Fee)
+                                   .FirstOrDefaultAsync();
+
+            // If `fee` is null, return 0; otherwise, return the value of `fee`
+            return fee ?? 0M;
+
+            //    var feeSchedule = await _context.FeeSchedules
+            //                                .FirstOrDefaultAsync(f => f.FeeSchTypeID == FeeSchTypeID);
+            //return feeSchedule.Fee.Value; // Return 0 if not found
+        }
+
+        public async Task<int> GetAccountBalanceAsync(int instID)
+        {
+            var instituteBalance = await _context.InstituteBalance
+                                                 .FirstOrDefaultAsync(b => b.InstID == instID);
+            return instituteBalance?.AccountBalance ?? 0; // Return 0 if not found
+        }
+
+        public async Task<bool> DeductFeeAsync(int instID, decimal fee)
+        {
+            var instituteBalance = await _context.InstituteBalance
+                                                 .FirstOrDefaultAsync(b => b.InstID == instID);
+
+            if (instituteBalance != null && instituteBalance.AccountBalance >= (int)Math.Ceiling(fee))
+            {
+                // Deduct the decimal fee from integer account balance
+                instituteBalance.AccountBalance -= (int)Math.Ceiling(fee);
+                await _context.SaveChangesAsync();
+                return true;
+            }
+            return false; // Insufficient balance or institute not found
+        }     
+    }
+}
+---------------------------------------------
+@page "/userapproval"
+@inject LoginService _service
+@rendermode InteractiveServer
+    
+<h3>User Approval</h3>
+
+@if (users == null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Select</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var user in users)
+            {
+                <tr>
+                    <td>
+                        <input type="checkbox" @bind="user.IsSelected" />
+                    </td>
+                    <td>@user.Name</td>
+                    <td>@user.Email</td>
+                    <td>@user.userStatus</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <button class="btn btn-primary" @onclick="ApproveSelectedUsers">Approve Selected Users</button>
+}
+
+@code {
+    private List<Users> users;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Fetch users as view models for the UI
+        users = await _service.GetUsersAsync();
+    }
+
+    private async Task ApproveSelectedUsers()
+    {
+        // Collects userID values of selected users
+        var selectedUserIds = users
+            .Where(u => u.IsSelected) // Only selected users
+            .Select(u => u.userID)    // Retrieve userID (note the lowercase 'u')
+            .ToList();
+
+        if (selectedUserIds.Count > 0)
+        {
+            await _service.ApproveUsersAsync(selectedUserIds);
+            users = await _service.GetUsersAsync(); // Refresh data
+        }
+    }
+
+}
+
+
+//////////////////////////////////////////////////////////////////////
+@page "/"
+@inject LoginService _service
+@rendermode InteractiveServer
+
+
+
+<h3>Deduct Fee</h3>
+
+<label>Institute ID:</label>
+<input type="number" @bind="FeeSchTypeID" />
+
+<button @onclick="DeductFee">Deduct Fee</button>
+
+@if (resultMessage != null)
+{
+    <p>@resultMessage</p>
+}
+
+@code
+{
+    private int FeeSchTypeID=1;
+    private string resultMessage;
+
+    private async Task DeductFee()
+    {
+        try
+        {
+
+            var fee = await _service.GetFeeAsync(FeeSchTypeID);
+            var accountBalance = await _service.GetAccountBalanceAsync(FeeSchTypeID);
+
+            if (accountBalance >= Math.Ceiling(fee))
+            {
+                var success = await _service.DeductFeeAsync(FeeSchTypeID, fee);
+                resultMessage = success ?
+                    "Fee successfully deducted." :
+                    "Error deducting fee.";
+            }
+            else
+            {
+                resultMessage = "Insufficient balance to deduct the fee.";
+            }
+        }
+        catch (Exception ex)
+        {
+            
+            resultMessage = "Error :" + ex.Message;
+        }
+      
+       
+        
+    }
+}
